@@ -6,10 +6,12 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
+#include <sys/stat.h>
 
 #define MSG_SIZE 80
 #define MAX_CLIENTS 95
 #define MYPORT 7400
+int flaga=0;
 
 void exitClient(int fd, fd_set *readfds, char fd_array[], int *num_clients){
     int i;
@@ -22,6 +24,99 @@ void exitClient(int fd, fd_set *readfds, char fd_array[], int *num_clients){
     for (; i < (*num_clients) - 1; i++)
         (fd_array[i]) = (fd_array[i + 1]);
     (*num_clients)--;
+}
+
+void wyslijPlik(int gn)
+{
+    char sciezka[512] = "temp.tmp";
+    long dl_pliku, wyslano, wyslano_razem, przeczytano;
+    struct stat fileinfo;
+    FILE* plik;
+    unsigned char bufor[1024];
+    
+    memset(sciezka, 0, 512);
+    
+    printf("Potomny: klient chce plik %s\n", sciezka);
+    
+    if (stat(sciezka, &fileinfo) < 0)
+    {
+        printf("Potomny: nie moge pobrac informacji o pliku\n");
+        return;
+    }
+    
+    if (fileinfo.st_size == 0)
+    {
+        printf("Potomny: rozmiar pliku 0\n");
+        return;
+    }
+    
+    printf("Potomny: dlugosc pliku: %d\n", fileinfo.st_size);
+    
+    dl_pliku = htonl((long) fileinfo.st_size);
+    
+    if (send(gn, &dl_pliku, sizeof(long), 0) != sizeof(long))
+    {
+        printf("Potomny: blad przy wysylaniu wielkosci pliku\n");
+        return;
+    }
+    
+    dl_pliku = fileinfo.st_size;
+    wyslano_razem = 0;
+    plik = fopen(sciezka, "rb");
+    if (plik == NULL)
+    {
+        printf("Potomny: blad przy otwarciu pliku\n");
+        return;
+    }
+    
+    while (wyslano_razem < dl_pliku)
+    {
+        przeczytano = fread(bufor, 1, 1024, plik);
+        wyslano = send(gn, bufor, przeczytano, 0);
+        if (przeczytano != wyslano)
+            break;
+        wyslano_razem += wyslano;
+        printf("Potomny: wyslano %d bajtow\n", wyslano_razem);
+    }
+    
+    if (wyslano_razem == dl_pliku)
+        printf("Potomny: plik wyslany poprawnie\n");
+    else
+        printf("Potomny: blad przy wysylaniu pliku\n");
+    fclose(plik);
+    return;    
+}
+
+void odbierzPlik(int gn)
+{
+	FILE *fp;
+	fp = fopen("temp.tmp", "w+");
+    char bufor[1025];
+	long dl_pliku, odebrano, odebrano_razem;
+	if (recv(gn, &dl_pliku, sizeof(long), 0) != sizeof(long))
+    {
+        printf("Blad przy odbieraniu dlugosci\n");
+        printf("Moze plik nie istnieje?\n");
+        return;
+    }
+    dl_pliku = ntohl(dl_pliku);
+    printf("Plik ma dlugosc %d\n", dl_pliku);
+    odebrano_razem = 0;
+    while (odebrano_razem < dl_pliku)
+    {
+        memset(bufor, 0, 1025);
+        odebrano = recv(gn, bufor, 1024, 0);
+        if (odebrano < 0)
+            break;
+        odebrano_razem += odebrano;
+        fputs(bufor, fp);
+		fclose(fp);
+    }
+    if (odebrano_razem != dl_pliku)
+        printf("*** BLAD W ODBIORZE PLIKU ***\n");
+    else
+        printf("*** PLIK ODEBRANY POPRAWNIE ***\n");
+	return;
 }
 
 int main(int argc, char *argv[]) {
@@ -65,11 +160,6 @@ int main(int argc, char *argv[]) {
      FD_ZERO(&readfds);
      FD_SET(server_sockfd, &readfds);
      FD_SET(0, &readfds);  /* Add keyboard to file descriptor set */
-     
-     //struct clientinfo c;
-     
-     //printf("sizeof(readfds)/(testfds): %d/%d\n",sizeof(readfds),sizeof(testfds));
-     //printf("Number of bits in readfds/testfds: %d/%d\n", sizeof(readfds)*8,sizeof(testfds)*8);
 
      /*  Now wait for clients and requests */
      while (1) {
@@ -82,7 +172,6 @@ int main(int argc, char *argv[]) {
               
               if (fd == server_sockfd) { /* Accept a new connection request */
                  client_sockfd = accept(server_sockfd, NULL, NULL);
-                 /*printf("client_sockfd: %d\n",client_sockfd);*/
                 
                                 
                  if (num_clients < MAX_CLIENTS) {
@@ -104,7 +193,6 @@ int main(int argc, char *argv[]) {
               }
               else if (fd == 0)  {  /* Process keyboard activity */                 
                  fgets(kb_msg, MSG_SIZE + 1, stdin);
-                 //printf("%s\n",kb_msg);
                  if (strcmp(kb_msg, "quit\n")==0) {
                     sprintf(msg, "XServer is shutting down.\n");
                     for (i = 0; i < num_clients ; i++) {
@@ -115,14 +203,12 @@ int main(int argc, char *argv[]) {
                     exit(0);
                  }
                  else {
-                    //printf("server - send\n");
                     sprintf(msg, "M%s", kb_msg);
                     for (i = 0; i < num_clients ; i++)
                        write(fd_array[i], msg, strlen(msg));
                  }
               }
               else if(fd) {  /*Process Client specific activity*/
-                 //printf("server - read\n");
                  //read data from open socket
                  result = read(fd, msg, MSG_SIZE);
                  
@@ -132,18 +218,34 @@ int main(int argc, char *argv[]) {
                     sprintf(kb_msg,"M%2d",fd-4);
                     msg[result]='\0';
                     
+					if(msg[0]=='p' && msg[1]=='l' && msg[2]=='i' && msg[3] == 'k')
+					{
+						flaga=1;
+					}
+					
                     /*concatinate the client id with the client's message*/
 					strcat(kb_msg," ");
                     strcat(kb_msg,msg+1);                                        
                     
                     /*print to other clients*/
-                    for(i=0;i<num_clients;i++){
-                       if (fd_array[i] != fd)  /*dont write msg to same client*/
-                          write(fd_array[i],kb_msg,strlen(kb_msg));
-                    }
-                    /*print to server*/
-                    printf("%s",kb_msg+1);
-                    
+					if(flaga==0)
+					{
+						for(i=0;i<num_clients;i++){
+						   if (fd_array[i] != fd)  /*dont write msg to same client*/
+							  write(fd_array[i],kb_msg,strlen(kb_msg));
+						}
+						/*print to server*/
+						printf("%s",kb_msg+1);
+					}
+					else if (flaga==1)
+					{						
+						odbierzPlik(client_sockfd);
+						for(i=0;i<num_clients;i++){
+						   if (fd_array[i] != fd)  /*dont write msg to same client*/
+							  wyslijPlik(fd_array[i]);
+						}
+						flaga=0;
+					}						
                      /*Exit Client*/
                     if(msg[0] == 'X'){
                        exitClient(fd,&readfds, fd_array,&num_clients);
